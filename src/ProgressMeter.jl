@@ -66,26 +66,41 @@ end
 const defaultglyphs = BarGlyphs('|','█', Sys.iswindows() ? '█' : ['▏','▎','▍','▌','▋','▊','▉'],' ','|',)
 
 # Internal struct for holding common properties and internals for progress meters
-Base.@kwdef mutable struct ProgressCore
-    color::Symbol               = :green        # color of the meter
-    desc::String                = "Progress: "  # prefix to the percentage, e.g.  "Computing..."
-    dt::Real                    = Float64(0.1)  # minimum time between updates
-    enabled::Bool               = true          # is the output enabled
-    offset::Int                 = 0             # position offset of progress bar (default is 0)
-    output::IO                  = stderr        # output stream into which the progress is written
-    showspeed::Bool             = false         # should the output include average time per iteration
+mutable struct ProgressCore{O<:IO}
+    color::Symbol               # color of the meter
+    desc::String                # prefix to the percentage, e.g.  "Computing..."
+    dt::Float64                 # minimum time between updates
+    enabled::Bool               # is the output enabled
+    offset::Int                 # position offset of progress bar (default is 0)
+    output::O                   # output stream into which the progress is written
+    showspeed::Bool             # should the output include average time per iteration
     # internals
-    check_iterations::Int       = 1             # number of iterations to check time for
-    counter::Int                = 0             # current iteration
-    lock::Threads.ReentrantLock = Threads.ReentrantLock()   # lock used when threading detected
-    numprintedvalues::Int       = 0             # num values printed below progress in last iteration
-    prev_update_count::Int      = 1             # counter at last update
-    printed::Bool               = false         # true if we have issued at least one status update
-    safe_lock::Int              = 2*(Threads.nthreads()>1) # 0: no lock, 1: lock, 2: detect
-    thread_id::Int              = Threads.threadid() # id of the thread that created the progressmeter
-    tinit::Float64              = time()        # time meter was initialized
-    tlast::Float64              = time()        # time of last update
-    tsecond::Float64            = time()        # ignore the first loop given usually uncharacteristically slow
+    check_iterations::Int       # number of iterations to check time for
+    counter::Int                # current iteration
+    lock::Threads.ReentrantLock # lock used when threading detected
+    numprintedvalues::Int       # num values printed below progress in last iteration
+    prev_update_count::Int      # counter at last update
+    printed::Bool               # true if we have issued at least one status update
+    safe_lock::Int              # 0: no lock, 1: lock, 2: detect
+    thread_id::Int              # id of the thread that created the progressmeter
+    tinit::Float64              # time meter was initialized
+    tlast::Float64              # time of last update
+    tsecond::Float64            # ignore the first loop given usually uncharacteristically slow
+end
+
+function ProgressCore(;
+        color::Symbol = :green,
+        desc::String = "Progress: ",
+        dt::Real = 0.1,
+        enabled::Bool = true,
+        offset::Integer = 0,
+        output::IO = stderr,
+        showspeed::Bool = false,
+        kwargs...)
+    ProgressCore{typeof(output)}(
+        color, desc, Float64(dt), enabled, Int(offset), output, showspeed,
+        1, 0, Threads.ReentrantLock(), 0, 1, false,
+        2*(Threads.nthreads()>1), Threads.threadid(), time(), time(), time())
 end
 
 """
@@ -98,23 +113,24 @@ the current task. Optionally you can disable the progress bar by setting
 `enabled=false`. You can also append a per-iteration average duration like
 "(12.34 ms/it)" to the description by setting `showspeed=true`.
 """
-mutable struct Progress <: AbstractProgress
+mutable struct Progress{O<:IO} <: AbstractProgress
     n::Int                  # total number of iterations
     start::Int              # which iteration number to start from
     barlen::Union{Int,Nothing} # progress bar size (default is available terminal width)
     barglyphs::BarGlyphs    # the characters to be used in the bar
     # internals
-    core::ProgressCore
+    core::ProgressCore{O}
 
     function Progress(
             n::Integer;
+            output::IO=stderr,
             start::Integer=0,
             barlen::Union{Int,Nothing}=nothing,
             barglyphs::BarGlyphs=defaultglyphs,
             kwargs...)
-        CLEAR_IJULIA[] = clear_ijulia()
-        core = ProgressCore(;kwargs...)
-        new(n, start, barlen, barglyphs, core)
+        CLEAR_IJULIA[] = clear_ijulia()::Bool
+        core = ProgressCore(;output=output, kwargs...)
+        new{typeof(output)}(n, start, barlen, barglyphs, core)
     end
 end
 
@@ -129,17 +145,17 @@ the progress meter by setting `enabled=false`. You can also append a
 per-iteration average duration like "(12.34 ms/it)" to the description by
 setting `showspeed=true`.
 """
-mutable struct ProgressThresh{T<:Real} <: AbstractProgress
+mutable struct ProgressThresh{T<:Real, O<:IO} <: AbstractProgress
     thresh::T           # termination threshold
     val::T              # current value
     # internals
     triggered::Bool     # has the threshold been reached?
-    core::ProgressCore  # common properties and internals
+    core::ProgressCore{O}  # common properties and internals
 
-    function ProgressThresh{T}(thresh; val::T=typemax(T), triggered::Bool=false, kwargs...) where T
-        CLEAR_IJULIA[] = clear_ijulia()
-        core = ProgressCore(;kwargs...)
-        new{T}(thresh, val, triggered, core)
+    function ProgressThresh{T}(thresh; val::T=typemax(T), triggered::Bool=false, output::IO=stderr, kwargs...) where T
+        CLEAR_IJULIA[] = clear_ijulia()::Bool
+        core = ProgressCore(;output=output, kwargs...)
+        new{T, typeof(output)}(thresh, val, triggered, core)
     end
 end
 ProgressThresh(thresh::Real; kwargs...) = ProgressThresh{typeof(thresh)}(thresh; kwargs...)
@@ -156,17 +172,17 @@ per-iteration average duration like "(12.34 ms/it)" to the description by
 setting `showspeed=true`.  Instead of displaying a counter, it
 can optionally display a spinning ball by passing `spinner=true`.
 """
-mutable struct ProgressUnknown <: AbstractProgress
+mutable struct ProgressUnknown{O<:IO} <: AbstractProgress
     # internals
     done::Bool              # is the task done?
     spinner::Bool           # show a spinner
     spincounter::Int        # counter for spinner
-    core::ProgressCore      # common properties and internals
+    core::ProgressCore{O}   # common properties and internals
 
-    function ProgressUnknown(; spinner::Bool=false, kwargs...)
-        CLEAR_IJULIA[] = clear_ijulia()
-        core = ProgressCore(;kwargs...)
-        new(false, spinner, 0, core)
+    function ProgressUnknown(; spinner::Bool=false, output::IO=stderr, kwargs...)
+        CLEAR_IJULIA[] = clear_ijulia()::Bool
+        core = ProgressCore(;output=output, kwargs...)
+        new{typeof(output)}(false, spinner, 0, core)
     end
 end
 
