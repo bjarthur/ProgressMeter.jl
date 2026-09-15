@@ -228,3 +228,12 @@ end
 # compute_front returns a Char for both kinds of `front`, and inferrably so
 @test (@inferred ProgressMeter.compute_front(ProgressMeter.defaultglyphs, 0.5)) isa Char
 @test (@inferred ProgressMeter.compute_front(BarGlyphs("[=> ]"), 0.5)) === '>'
+# IJulia support is a package extension; without IJulia loaded the hooks are inert
+@test ProgressMeter.IJULIA_BACKEND[] isa ProgressMeter.NoIJulia
+@test !ProgressMeter.running_ijulia_kernel()
+@test ProgressMeter.ijulia_clear_output(ProgressMeter.IJULIA_BACKEND[]) === nothing
+@test ProgressMeter.ijulia_reset_stdio(ProgressMeter.IJULIA_BACKEND[]) === nothing
+let io = IOBuffer()
+    ProgressMeter.printover(io, "msg")
+    @test endswith(String(take!(io)), "\e[K")   # line clear: not in a notebook
+end
